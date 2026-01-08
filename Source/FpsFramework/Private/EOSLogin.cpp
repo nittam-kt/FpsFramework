@@ -1,9 +1,10 @@
-// Fill out your copyright notice in the Description page of Project Settings.
+﻿// Fill out your copyright notice in the Description page of Project Settings.
 
 
 #include "EOSLogin.h"
 #include "OnlineSubsystem.h"
 #include "Interfaces/OnlineIdentityInterface.h"
+#include "Kismet/GameplayStatics.h"
 
 
 // Sets default values
@@ -14,7 +15,7 @@ AEOSLogin::AEOSLogin()
 
 }
 
-void AEOSLogin::Lonin()
+void AEOSLogin::Login()
 {
     IOnlineSubsystem* OSS = IOnlineSubsystem::Get();
     if (!OSS) return;
@@ -22,11 +23,35 @@ void AEOSLogin::Lonin()
     IOnlineIdentityPtr Identity = OSS->GetIdentityInterface();
     if (!Identity.IsValid()) return;
 
+    TSharedPtr<const FUniqueNetId> Id = Identity->GetUniquePlayerId(0);
+    if (Id.IsValid())
+    {
+        // すでにログインしていてユーザーIDが取得できている
+        UE_LOG(LogTemp, Log, TEXT("ProductUserId: %s"), *Id->ToString());
+        return;
+    }
+
     FOnlineAccountCredentials Creds;
-    Creds.Type = TEXT("device"); // �� "accountportal" �Ȃǂ��I�ׂ�
+    Creds.Type = TEXT("accountportal"); // ← "accountportal" なども選べる
     Creds.Id = TEXT("");
     Creds.Token = TEXT("");
 
+    Identity->OnLoginCompleteDelegates->AddLambda(
+        [this](int32 LocalUserNum, bool bWasSuccessful, const FUniqueNetId& UserId, const FString& Error)
+        {
+            if (bWasSuccessful)
+            {
+                UKismetSystemLibrary::PrintString(this, "EOS Login(): Successful",
+                    true, true, FColor::Blue, 4.f, TEXT("None"));
+            }
+            else
+            {
+                UKismetSystemLibrary::PrintString(this, Error,
+                    true, true, FColor::Blue, 4.f, TEXT("None"));
+            }
+        });
+    UKismetSystemLibrary::PrintString(this, "EOS Login() - Start ---",
+        true, true, FColor::Green, 4.f, TEXT("None"));
     Identity->Login(0, Creds);
 }
 
@@ -36,7 +61,7 @@ void AEOSLogin::BeginPlay()
 {
 	Super::BeginPlay();
 	
-	Lonin();
+	Login();
 }
 
 // Called every frame
