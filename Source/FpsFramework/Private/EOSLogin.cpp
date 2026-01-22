@@ -23,6 +23,12 @@ void AEOSLogin::Login()
     IOnlineIdentityPtr Identity = OSS->GetIdentityInterface();
     if (!Identity.IsValid()) return;
 
+    if(!OSS->GetSubsystemName().ToString().Equals(TEXT("EOS"), ESearchCase::IgnoreCase))
+    {
+        UE_LOG(LogTemp, Log, TEXT("Subsystem is not EOS."));
+        return;
+    }
+
     TSharedPtr<const FUniqueNetId> Id = Identity->GetUniquePlayerId(0);
     if (Id.IsValid())
     {
