@@ -39,6 +39,7 @@ public class FpsFramework : ModuleRules
 				"Engine",
 				"Slate",
 				"SlateCore",
+                "HTTP",
 				// ... add private dependencies that you statically link with here ...	
 			}
 			);
