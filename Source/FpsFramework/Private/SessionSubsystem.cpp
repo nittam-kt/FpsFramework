@@ -3,6 +3,8 @@
 
 #include "SessionSubsystem.h"
 #include "OnlineSubsystem.h"
+#include "Interfaces/OnlineIdentityInterface.h"
+#include "Kismet/KismetSystemLibrary.h"
 #include "Kismet/GameplayStatics.h"
 #include "GameFramework/PlayerController.h"
 #include "GenericPlatform/GenericPlatformHttp.h"
@@ -54,8 +56,8 @@ bool USessionSubsystem::CreateSession(FString RoomName, int32 PublicConnections)
 
     if (Session->GetNamedSession(SESSION_NAME))
     {
-        // 既に同名セッションが残っていたら再起動させる
-        return false;
+        // セッションが残っていれば再開
+        return ResumeHosting();
     }
 
     // === セッション設定 ===
@@ -80,8 +82,6 @@ bool USessionSubsystem::CreateSession(FString RoomName, int32 PublicConnections)
     ClearDelegates();
     OnCreateHandle = Session->AddOnCreateSessionCompleteDelegate_Handle(
         FOnCreateSessionCompleteDelegate::CreateUObject(this, &USessionSubsystem::OnCreateComplete));
-    OnStartHandle = Session->AddOnStartSessionCompleteDelegate_Handle(
-        FOnStartSessionCompleteDelegate::CreateUObject(this, &USessionSubsystem::OnStartComplete));
 
     // 実行（UserIndex=0でOK。複数LocalPlayerがある場合は切替）
     const bool bIssued = Session->CreateSession(/*LocalUserNum=*/0, SESSION_NAME, Settings);
@@ -91,73 +91,47 @@ bool USessionSubsystem::CreateSession(FString RoomName, int32 PublicConnections)
             true, true, FColor::Red, 4.f, TEXT("None"));
         OnCreateFinished.Broadcast(false);
     }
-    return true;
+    return bIssued;
 }
 
 void USessionSubsystem::OnCreateComplete(FName, bool bOk)
 {
-    FString ConnectString;
-    if(Session->GetResolvedConnectString(NAME_GameSession, ConnectString))
-    {
-        UE_LOG(LogTemp, Warning, TEXT("ResolvedConnectString: %s"), *ConnectString);
-    }
-    else
-    {
-        UE_LOG(LogTemp, Warning, TEXT("GetResolvedConnectString failed"));
-    }
-
+    ClearDelegates();
+    if (bOk) ResumeHosting();
     OnCreateFinished.Broadcast(bOk);
-    if (!bOk) { ClearDelegates(); return; }
-
-    const FString CurrentMap = GetWorld()->GetOutermost()->GetName(); // "/Game/Maps/Lobby" など
-    UGameplayStatics::OpenLevel(GetWorld(), FName(*CurrentMap), true, TEXT("?listen?HostSession=1"));
-    UKismetSystemLibrary::PrintString(this, CurrentMap,
-        true, true, FColor::Red, 4.f, TEXT("None"));
 }
 
 void USessionSubsystem::StartSession()
 {
-    const FString CurrentMap = GetWorld()->GetOutermost()->GetName(); // "/Game/Maps/Lobby" など
-    if(IOnlineSubsystem* os = IOnlineSubsystem::Get())
+    if (!HasHostedSession() || GetWorld()->GetNetMode() != NM_ListenServer ||
+        !GetWorld()->GetNetDriver()) return;
+
+    const auto State = Session->GetNamedSession(SESSION_NAME)->SessionState;
+
+    // 開始済みなら、Listen サーバーの再開だけでよい。
+    if (State == EOnlineSessionState::InProgress) return;
+    if (State != EOnlineSessionState::Pending && State != EOnlineSessionState::Ended) return;
+
+    if (OnStartHandle.IsValid())
+        Session->ClearOnStartSessionCompleteDelegate_Handle(OnStartHandle);
+
+    // セッションの開始とデリゲートハンドルの登録
+    OnStartHandle = Session->AddOnStartSessionCompleteDelegate_Handle(
+        FOnStartSessionCompleteDelegate::CreateUObject(this, &USessionSubsystem::OnStartComplete));
+
+    if (!Session->StartSession(SESSION_NAME))
     {
-        if(IOnlineSessionPtr sess = os->GetSessionInterface())
-        {
-            FNamedOnlineSession* nsess = sess->GetNamedSession(NAME_GameSession);
-            if(!nsess)
-            {
-                UE_LOG(LogTemp, Warning, TEXT("StartSession: session not found"));
-                return;
-            }
-
-            // セッション開始（内部状態を「スタート」に）
-            sess->StartSession(NAME_GameSession);
-            UKismetSystemLibrary::PrintString(this, "OnCreateComplete: Success!!",
-                true, true, FColor::Cyan, 4.f, TEXT("None"));
-
-            const FOnlineSessionSettings& Settings = nsess->SessionSettings;
-
-            UE_LOG(LogTemp, Log,
-                TEXT("SessionState=%s  bShouldAdvertise=%d  NumPublicConnections=%d  NumOpenPublicConnections=%d"),
-                EOnlineSessionState::ToString(nsess->SessionState),
-                Settings.bShouldAdvertise ? 1 : 0,
-                Settings.NumPublicConnections,
-                nsess->NumOpenPublicConnections
-            );
-            FString ConnectString;
-            if(Session->GetResolvedConnectString(NAME_GameSession, ConnectString))
-            {
-                UE_LOG(LogTemp, Warning, TEXT("ResolvedConnectString: %s"), *ConnectString);
-            }
-            else
-            {
-                UE_LOG(LogTemp, Warning, TEXT("GetResolvedConnectString failed"));
-            }
-        }
+        Session->ClearOnStartSessionCompleteDelegate_Handle(OnStartHandle);
+        OnStartHandle.Reset();
+        UKismetSystemLibrary::PrintString(this, TEXT("StartSession: failed"));
     }
 }
 
 void USessionSubsystem::OnStartComplete(FName, bool bOk)
 {
+    Session->ClearOnStartSessionCompleteDelegate_Handle(OnStartHandle);
+    OnStartHandle.Reset();
+    UKismetSystemLibrary::PrintString(this, bOk ? TEXT("StartSession: OK") : TEXT("StartSession: failed"));
     UE_LOG(LogTemp, Log, TEXT("StartSession: %s"), bOk ? TEXT("OK") : TEXT("NG"));
 }
 
@@ -295,4 +269,62 @@ void USessionSubsystem::OnJoinComplete(FName, EOnJoinSessionCompleteResult::Type
         }
     }
     ClearDelegates();
+}
+
+void USessionSubsystem::Deinitialize()
+{
+    ClearDelegates();
+    Super::Deinitialize();
+}
+
+bool USessionSubsystem::HasHostedSession()
+{
+    if (!EnsureOnline()) return false;
+    const auto Identity = OSS->GetIdentityInterface();
+    if (!Identity.IsValid() || Identity->GetLoginStatus(0) != ELoginStatus::LoggedIn) return false;
+
+    const auto* Room = Session->GetNamedSession(SESSION_NAME);
+    const auto UserId = Identity->GetUniquePlayerId(0);
+    return Room && Room->bHosting && UserId.IsValid() && Room->OwningUserId.IsValid() &&
+        *UserId == *Room->OwningUserId;
+}
+
+bool USessionSubsystem::ResumeHosting()
+{
+    // 他人の部屋に参加している場合は、ホストとして再開できない。
+    if (!HasHostedSession()) return false;
+    const auto State = Session->GetNamedSession(SESSION_NAME)->SessionState;
+    if (State != EOnlineSessionState::Pending && State != EOnlineSessionState::InProgress &&
+        State != EOnlineSessionState::Ended) return false;
+
+    if (GetWorld()->GetNetMode() == NM_ListenServer && GetWorld()->GetNetDriver())
+    {
+        StartSession();
+    }
+    else
+    {
+        // 同じ部屋を使って現在のマップを Listen サーバーとして開き直す。
+        const FString Map = UGameplayStatics::GetCurrentLevelName(this, true);
+        UGameplayStatics::OpenLevel(this, FName(*Map), true, TEXT("listen?HostSession=1"));
+    }
+    return true;
+}
+
+FString USessionSubsystem::GetStatusText()
+{
+    if (!EnsureOnline()) return TEXT("Online subsystem unavailable");
+    const auto Identity = OSS->GetIdentityInterface();
+    const bool bLoggedIn = Identity.IsValid() && Identity->GetLoginStatus(0) == ELoginStatus::LoggedIn;
+    FString Text = bLoggedIn ? TEXT("EOS: Logged in") : TEXT("EOS: Not logged in");
+    const auto* Room = Session->GetNamedSession(SESSION_NAME);
+    if (!Room) return Text + TEXT("\nRoom: None");
+
+    FString Name = Room->OwningUserName;
+    Room->SessionSettings.Get(FName(TEXT("SERVER_NAME_KEY")), Name);
+    Text += FString::Printf(TEXT("\nRoom: %s (%s)"), *Name,
+        EOnlineSessionState::ToString(Room->SessionState));
+    if (!HasHostedSession()) return Text + TEXT("\nNot the local host");
+
+    const bool bListening = GetWorld()->GetNetMode() == NM_ListenServer && GetWorld()->GetNetDriver();
+    return Text + (bListening ? TEXT("\nHost: Listening") : TEXT("\nHost: Not listening"));
 }

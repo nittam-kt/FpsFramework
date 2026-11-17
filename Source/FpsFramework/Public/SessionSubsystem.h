@@ -34,6 +34,17 @@ class FPSFRAMEWORK_API USessionSubsystem : public UGameInstanceSubsystem
 {
     GENERATED_BODY()
 public:
+    virtual void Deinitialize() override;
+
+    UFUNCTION(BlueprintPure, Category = "Session")
+    bool HasHostedSession();
+
+    UFUNCTION(BlueprintPure, Category = "Session")
+    FString GetStatusText();
+
+    UFUNCTION(BlueprintCallable, Category = "Session")
+    bool ResumeHosting();
+
     UFUNCTION(BlueprintCallable, Category = "Session")
     bool CreateSession(FString RoomName, int32 PublicConnections = 3);
 

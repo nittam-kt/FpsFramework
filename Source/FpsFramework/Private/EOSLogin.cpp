@@ -4,7 +4,9 @@
 #include "EOSLogin.h"
 #include "OnlineSubsystem.h"
 #include "Interfaces/OnlineIdentityInterface.h"
-#include "Kismet/GameplayStatics.h"
+#include "Kismet/KismetSystemLibrary.h"
+#include "SessionSubsystem.h"
+#include "Engine/GameInstance.h"
 
 
 // Sets default values
@@ -12,61 +14,71 @@ AEOSLogin::AEOSLogin()
 {
  	// Set this actor to call Tick() every frame.  You can turn this off to improve performance if you don't need it.
 	PrimaryActorTick.bCanEverTick = true;
+    PrimaryActorTick.TickInterval = 0.5f;
 
 }
 
 void AEOSLogin::Login()
 {
     IOnlineSubsystem* OSS = IOnlineSubsystem::Get();
-    if (!OSS) return;
+    if (!OSS || OSS->GetSubsystemName() != FName(TEXT("EOS"))) return;
 
-    IOnlineIdentityPtr Identity = OSS->GetIdentityInterface();
-    if (!Identity.IsValid()) return;
+    LoginIdentity = OSS->GetIdentityInterface();
+    if (!LoginIdentity.IsValid() || LoginHandle.IsValid()) return;
 
-    if(!OSS->GetSubsystemName().ToString().Equals(TEXT("EOS"), ESearchCase::IgnoreCase))
-    {
-        UE_LOG(LogTemp, Log, TEXT("Subsystem is not EOS."));
-        return;
-    }
+    // ログイン済みなら再ログインしない。状態は ShowStatus() で表示する。
+    if (LoginIdentity->GetLoginStatus(0) == ELoginStatus::LoggedIn) return;
 
-    TSharedPtr<const FUniqueNetId> Id = Identity->GetUniquePlayerId(0);
-    if (Id.IsValid())
-    {
-        // すでにログインしていてユーザーIDが取得できている
-        UE_LOG(LogTemp, Log, TEXT("ProductUserId: %s"), *Id->ToString());
-        return;
-    }
+    LoginHandle = LoginIdentity->AddOnLoginCompleteDelegate_Handle(0,
+        FOnLoginCompleteDelegate::CreateUObject(this, &AEOSLogin::OnLoginComplete));
 
     FOnlineAccountCredentials Creds;
-    Creds.Type = TEXT("accountportal"); // ← "accountportal" なども選べる
-    Creds.Id = TEXT("");
-    Creds.Token = TEXT("");
-
-    Identity->OnLoginCompleteDelegates->AddLambda(
-        [this](int32 LocalUserNum, bool bWasSuccessful, const FUniqueNetId& UserId, const FString& Error)
-        {
-            if (bWasSuccessful)
-            {
-                UKismetSystemLibrary::PrintString(this, "EOS Login(): Successful",
-                    true, true, FColor::Blue, 4.f, TEXT("None"));
-            }
-            else
-            {
-                UKismetSystemLibrary::PrintString(this, Error,
-                    true, true, FColor::Blue, 4.f, TEXT("None"));
-            }
-        });
-    UKismetSystemLibrary::PrintString(this, "EOS Login() - Start ---",
-        true, true, FColor::Green, 4.f, TEXT("None"));
-    Identity->Login(0, Creds);
+    Creds.Type = TEXT("accountportal");
+    UKismetSystemLibrary::PrintString(this, TEXT("EOS: logging in..."));
+    if (!LoginIdentity->Login(0, Creds))
+    {
+        ClearLoginDelegate();
+        UKismetSystemLibrary::PrintString(this, TEXT("EOS: login request failed"));
+    }
 }
 
+void AEOSLogin::OnLoginComplete(int32 LocalUserNum, bool bSuccess,
+    const FUniqueNetId& UserId, const FString& Error)
+{
+    ClearLoginDelegate();
+    UKismetSystemLibrary::PrintString(this,
+        bSuccess ? TEXT("EOS: login successful") : FString(TEXT("EOS login failed: ")) + Error);
+    ShowStatus();
+}
+
+void AEOSLogin::ClearLoginDelegate()
+{
+    if (LoginIdentity.IsValid() && LoginHandle.IsValid())
+        LoginIdentity->ClearOnLoginCompleteDelegate_Handle(0, LoginHandle);
+    LoginHandle.Reset();
+}
+
+void AEOSLogin::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+    // エディタの停止時にも通知を解除する。
+    ClearLoginDelegate();
+    Super::EndPlay(EndPlayReason);
+}
+
+void AEOSLogin::ShowStatus()
+{
+    auto* Sub = GetGameInstance()->GetSubsystem<USessionSubsystem>();
+    const FName Key(*FString::Printf(TEXT("EOSStatus_%u"), GetWorld()->GetUniqueID()));
+    UKismetSystemLibrary::PrintString(this, Sub->GetStatusText(),
+        true, false, FLinearColor::Yellow, 0.6f, Key);
+}
 
 // Called when the game starts or when spawned
 void AEOSLogin::BeginPlay()
 {
 	Super::BeginPlay();
 	
+    ShowStatus();
 	Login();
 }
 
@@ -74,6 +86,7 @@ void AEOSLogin::BeginPlay()
 void AEOSLogin::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
+    ShowStatus();
 
 }
 

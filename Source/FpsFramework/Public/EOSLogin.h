@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
+#include "Interfaces/OnlineIdentityInterface.h"
 #include "EOSLogin.generated.h"
 
 UCLASS()
@@ -18,6 +19,12 @@ public:
 	void Login();
 
 protected:
+    virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+    void ClearLoginDelegate();
+    void OnLoginComplete(int32 LocalUserNum, bool bSuccess, const FUniqueNetId& UserId, const FString& Error);
+    void ShowStatus();
+    IOnlineIdentityPtr LoginIdentity;
+    FDelegateHandle LoginHandle;
 	// Called when the game starts or when spawned
 	virtual void BeginPlay() override;
 
